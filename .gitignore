@@ -1,0 +1,8 @@
+node_modules/
+.expo/
+.playwright-cli/
+output/
+expo-web.log
+expo-web.err.log
+npm-debug.log*
+.env

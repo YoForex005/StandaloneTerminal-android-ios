@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "YoPips Terminal Standalone",
+    "slug": "yopips-terminal-standalone",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "yopipsterminal",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.yopips.terminalstandalone"
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}

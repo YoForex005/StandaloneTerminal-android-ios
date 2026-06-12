@@ -1,0 +1,1004 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Full Trading Chart Page</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #06070a;
+      --surface: rgba(9, 10, 15, 0.94);
+      --surface2: #121620;
+      --ink: #f6f7fb;
+      --muted: rgba(246, 247, 251, 0.58);
+      --soft: rgba(246, 247, 251, 0.34);
+      --line: rgba(255, 255, 255, 0.09);
+      --green: #55e69a;
+      --red: #ff6c5f;
+      --gold: #e9c97a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background:
+        radial-gradient(circle at 8% 4%, rgba(36, 50, 46, 0.7), transparent 34%),
+        radial-gradient(circle at 95% 88%, rgba(51, 35, 63, 0.48), transparent 36%),
+        var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      overflow: hidden;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    .app {
+      height: 100%;
+      display: grid;
+      grid-template-rows: auto auto auto auto 1fr auto;
+      padding: max(16px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom));
+      gap: 8px;
+      max-width: 980px;
+      margin: 0 auto;
+    }
+
+    .topbar,
+    .symbol-row,
+    .price-row,
+    .ohlc,
+    .timeframes {
+      width: 100%;
+    }
+
+    .topbar,
+    .symbol-row,
+    .price-row,
+    .timeframes,
+    .trade-row,
+    .position-row {
+      display: flex;
+      align-items: center;
+    }
+
+    .topbar,
+    .symbol-row,
+    .price-row,
+    .ohlc {
+      justify-content: space-between;
+    }
+
+    .icon-button {
+      width: 38px;
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--ink);
+      display: grid;
+      place-items: center;
+      font-size: 18px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .right-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .symbol {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+      font-weight: 760;
+      font-size: 18px;
+      padding: 0;
+      cursor: pointer;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      height: 30px;
+      padding: 0 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(85, 230, 154, 0.52);
+      background: rgba(17, 19, 26, 0.78);
+      color: var(--green);
+      font-size: 11px;
+      font-weight: 760;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 1.2s ease-out infinite;
+    }
+
+    @keyframes pulse {
+      from { box-shadow: 0 0 0 0 rgba(85, 230, 154, 0.28); }
+      to { box-shadow: 0 0 0 12px rgba(85, 230, 154, 0); }
+    }
+
+    .price {
+      display: flex;
+      align-items: flex-start;
+      font-weight: 650;
+      line-height: 0.94;
+    }
+
+    .price-main { font-size: clamp(42px, 9vw, 68px); }
+    .price-tail {
+      font-size: clamp(22px, 4vw, 34px);
+      color: var(--soft);
+      margin-top: 6px;
+      margin-left: 2px;
+    }
+
+    .change {
+      font-family: var(--mono);
+      font-size: 13px;
+      text-align: right;
+      line-height: 1.4;
+    }
+
+    .positive { color: var(--green); }
+    .negative { color: var(--red); }
+
+    .ohlc {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 8px;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .ohlc span {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--ink);
+    }
+
+    .ohlc b {
+      font-family: var(--sans);
+      font-size: 9px;
+      color: var(--soft);
+      margin-right: 3px;
+    }
+
+    .timeframes {
+      justify-content: flex-start;
+      gap: 4px;
+    }
+
+    .tf {
+      border: 0;
+      color: var(--muted);
+      background: transparent;
+      min-width: 38px;
+      height: 28px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 760;
+      cursor: pointer;
+    }
+
+    .tf.active {
+      color: var(--bg);
+      background: var(--ink);
+    }
+
+    .chart-shell {
+      position: relative;
+      min-height: 260px;
+      overflow: hidden;
+      touch-action: none;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      min-height: 260px;
+      cursor: grab;
+    }
+
+    canvas.dragging { cursor: grabbing; }
+
+    .hint {
+      position: absolute;
+      left: 8px;
+      bottom: 8px;
+      color: rgba(246, 247, 251, 0.24);
+      font-size: 11px;
+      pointer-events: none;
+    }
+
+    .trade-panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      display: grid;
+      gap: 10px;
+      box-shadow: 0 16px 44px rgba(0, 0, 0, 0.28);
+    }
+
+    .quote-row,
+    .trade-row,
+    .meta-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .quote-cell {
+      min-width: 76px;
+      text-align: center;
+    }
+
+    .quote-cell small,
+    .meta-row span {
+      display: block;
+      color: var(--soft);
+      font-size: 9px;
+      font-weight: 760;
+    }
+
+    .quote-cell strong {
+      display: block;
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: 13px;
+      margin-top: 2px;
+    }
+
+    .side-btn {
+      flex: 1;
+      min-height: 54px;
+      border: 0;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      color: var(--bg);
+    }
+
+    .side-btn small {
+      display: block;
+      font-size: 11px;
+      font-weight: 760;
+    }
+
+    .side-btn strong {
+      display: block;
+      font-family: var(--mono);
+      font-size: 20px;
+      font-weight: 500;
+    }
+
+    .sell { background: var(--ink); }
+    .buy { background: var(--gold); }
+
+    .lots {
+      width: 90px;
+      height: 54px;
+      border-radius: 8px;
+      background: #05060a;
+      display: grid;
+      grid-template-columns: 24px 1fr 24px;
+      align-items: center;
+      padding: 0 4px;
+    }
+
+    .lot-step {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      height: 38px;
+      cursor: pointer;
+      font-size: 15px;
+    }
+
+    .lots input {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+      font-family: var(--mono);
+      text-align: center;
+      outline: none;
+      font-size: 12px;
+    }
+
+    .meta-row {
+      justify-content: center;
+      color: var(--soft);
+      font-size: 10px;
+    }
+
+    .positions {
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+      min-height: 42px;
+      max-height: 132px;
+      overflow: auto;
+    }
+
+    .positions-title {
+      color: var(--soft);
+      font-size: 10px;
+      font-weight: 760;
+      margin-bottom: 7px;
+    }
+
+    .position-row {
+      min-height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 8px;
+      gap: 8px;
+      margin-bottom: 7px;
+    }
+
+    .tag {
+      font-size: 9px;
+      font-weight: 760;
+      border: 1px solid currentColor;
+      border-radius: 3px;
+      padding: 2px 5px;
+    }
+
+    .pos-info {
+      flex: 1;
+      min-width: 0;
+      color: var(--muted);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pnl {
+      width: 88px;
+      text-align: right;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .close {
+      border: 0;
+      background: transparent;
+      color: var(--red);
+      font-size: 10px;
+      font-weight: 760;
+      cursor: pointer;
+    }
+
+    .symbol-menu {
+      position: fixed;
+      left: 14px;
+      right: 14px;
+      top: 86px;
+      max-width: 420px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(12, 15, 21, 0.98);
+      box-shadow: 0 22px 60px rgba(0, 0, 0, 0.36);
+      overflow: hidden;
+      z-index: 5;
+      display: none;
+    }
+
+    .symbol-menu.open { display: block; }
+
+    .symbol-option {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+      display: grid;
+      grid-template-columns: 82px 1fr;
+      gap: 10px;
+      padding: 12px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      cursor: pointer;
+    }
+
+    .symbol-option:hover { background: rgba(255, 255, 255, 0.04); }
+    .symbol-option small { color: var(--muted); }
+
+    .notice-wrap {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .notice {
+      min-height: 36px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 14px;
+      border-radius: 6px;
+      border: 1px solid rgba(85, 230, 154, 0.36);
+      background: rgba(10, 12, 18, 0.88);
+      color: #f8fafc;
+      font-weight: 760;
+      font-size: 13px;
+      opacity: 0;
+      transform: translate(var(--start-x, 0), 104px) scale(0.82);
+    }
+
+    .notice.show {
+      animation: tradeNotice 1.35s cubic-bezier(.2,.8,.2,1) forwards;
+    }
+
+    .notice::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    @keyframes tradeNotice {
+      0% { opacity: 0; transform: translate(var(--start-x, 0), 104px) scale(0.82); }
+      18% { opacity: 1; }
+      38% { opacity: 1; transform: translate(0, 0) scale(1); }
+      82% { opacity: 1; transform: translate(0, 0) scale(1); }
+      100% { opacity: 0; transform: translate(0, -8px) scale(0.98); }
+    }
+
+    @media (max-height: 720px) {
+      .app { gap: 6px; }
+      .chart-shell { min-height: 220px; }
+      canvas { min-height: 220px; }
+      .price-main { font-size: 42px; }
+      .positions { max-height: 92px; }
+    }
+
+    @media (max-width: 520px) {
+      .app { padding-left: 10px; padding-right: 10px; }
+      .ohlc { gap: 5px; }
+      .ohlc span { font-size: 9px; }
+      .lots { width: 82px; }
+      .side-btn strong { font-size: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <div class="topbar">
+      <button class="icon-button" type="button" aria-label="Back">‹</button>
+      <div class="right-actions">
+        <button class="icon-button" type="button" aria-label="Notifications">⌁</button>
+        <button class="icon-button" type="button" aria-label="Account">A</button>
+      </div>
+    </div>
+
+    <div class="symbol-row">
+      <button id="symbolButton" class="symbol" type="button"><span id="symbolCode">EURUSD</span><span>⌄</span></button>
+      <div class="status"><span class="dot"></span> DEMO LIVE</div>
+    </div>
+
+    <section class="price-row">
+      <div class="price"><span id="priceMain" class="price-main">--</span><span id="priceTail" class="price-tail"></span></div>
+      <div id="changeBox" class="change negative"><div id="changeValue">--</div><div id="changePct">--</div></div>
+    </section>
+
+    <section class="ohlc">
+      <span><b>O</b><span id="openValue">--</span></span>
+      <span><b>H</b><span id="highValue">--</span></span>
+      <span><b>L</b><span id="lowValue">--</span></span>
+      <span><b>C</b><span id="closeValue">--</span></span>
+      <span><b>VOL</b><span id="volumeValue">--</span></span>
+      <span><b>SPR</b><span id="spreadValue">--</span></span>
+    </section>
+
+    <nav class="timeframes">
+      <button class="tf" data-tf="M1" type="button">M1</button>
+      <button class="tf active" data-tf="M5" type="button">M5</button>
+      <button class="tf" data-tf="M15" type="button">M15</button>
+      <button class="tf" data-tf="H1" type="button">H1</button>
+      <button class="tf" data-tf="H4" type="button">H4</button>
+      <button class="tf" data-tf="D1" type="button">D1</button>
+    </nav>
+
+    <section id="chartShell" class="chart-shell">
+      <canvas id="chartCanvas"></canvas>
+      <div class="hint">Drag to pan • wheel to zoom</div>
+    </section>
+
+    <section class="trade-panel">
+      <div class="quote-row">
+        <div class="quote-cell"><small>QUOTE</small><strong id="quoteSymbol">EURUSD</strong></div>
+        <div class="quote-cell"><small>MID</small><strong id="midValue">--</strong></div>
+        <div class="quote-cell"><small>SPREAD</small><strong id="spreadPanel">--</strong></div>
+      </div>
+
+      <div class="trade-row">
+        <button id="sellButton" class="side-btn sell" type="button"><small>SELL</small><strong id="sellPrice">--</strong></button>
+        <div class="lots">
+          <button id="lotDown" class="lot-step" type="button">-</button>
+          <input id="lotsInput" type="text" inputmode="decimal" value="0.50" aria-label="Lots" />
+          <button id="lotUp" class="lot-step" type="button">+</button>
+        </div>
+        <button id="buyButton" class="side-btn buy" type="button"><small>BUY</small><strong id="buyPrice">--</strong></button>
+      </div>
+
+      <div class="meta-row"><span>Margin --</span><span>•</span><span>Pip value --</span><span>•</span><span>Demo mode</span></div>
+
+      <div class="positions">
+        <div id="positionsTitle" class="positions-title">OPEN POSITIONS (0)</div>
+        <div id="positionsList"></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="symbolMenu" class="symbol-menu"></div>
+  <div class="notice-wrap"><div id="notice" class="notice">Trade placed</div></div>
+
+  <script>
+    const SYMBOLS = {
+      EURUSD: { code: 'EURUSD', name: 'Euro / US Dollar', decimals: 4, basePrice: 1.0842, spread: 0.0004 },
+      GBPUSD: { code: 'GBPUSD', name: 'Pound / US Dollar', decimals: 4, basePrice: 1.2614, spread: 0.0006 },
+      XAUUSD: { code: 'XAUUSD', name: 'Gold / US Dollar', decimals: 2, basePrice: 2308.42, spread: 0.45 },
+      USDJPY: { code: 'USDJPY', name: 'US Dollar / Yen', decimals: 2, basePrice: 156.84, spread: 0.05 },
+      BTCUSD: { code: 'BTCUSD', name: 'Bitcoin / US Dollar', decimals: 0, basePrice: 58428, spread: 12 }
+    };
+
+    const TF_MINUTES = { M1: 1, M5: 5, M15: 15, H1: 60, H4: 240, D1: 1440 };
+    const DEFAULT_VISIBLE = 52;
+    const MIN_VISIBLE = 18;
+    const PAD_LEFT = 8;
+    const PAD_RIGHT = 56;
+    const RIGHT_SHIFT_GAP = 42;
+    const PAD_TOP = 12;
+    const PAD_BOTTOM = 24;
+
+    const canvas = document.getElementById('chartCanvas');
+    const ctx = canvas.getContext('2d');
+    const shell = document.getElementById('chartShell');
+    const symbolButton = document.getElementById('symbolButton');
+    const symbolMenu = document.getElementById('symbolMenu');
+    const notice = document.getElementById('notice');
+
+    let activeSymbol = SYMBOLS.EURUSD;
+    let activeTf = 'M5';
+    let candles = [];
+    let positions = [];
+    let visibleCount = DEFAULT_VISIBLE;
+    let rightOffset = 0;
+    let lots = 0.5;
+    let dragging = false;
+    let dragStartX = 0;
+    let dragStartOffset = 0;
+    let lastTick = performance.now();
+
+    const $ = id => document.getElementById(id);
+    const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+    const roundTo = (value, decimals) => Math.round(value * Math.pow(10, decimals)) / Math.pow(10, decimals);
+
+    function hashSeed(seed) {
+      let hash = 2166136261;
+      for (let i = 0; i < seed.length; i++) {
+        hash ^= seed.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+      return hash >>> 0;
+    }
+
+    function seededRandom(seed) {
+      let state = hashSeed(seed);
+      return function random() {
+        state += 0x6d2b79f5;
+        let value = state;
+        value = Math.imul(value ^ (value >>> 15), value | 1);
+        value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+        return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    function randomCentered(rand) {
+      return (rand() + rand() + rand() + rand()) / 2 - 1;
+    }
+
+    function formatPrice(value, decimals) {
+      return Number(value).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+    }
+
+    function formatVolume(value) {
+      if (value >= 1000000) return (value / 1000000).toFixed(1) + 'M';
+      if (value >= 1000) return (value / 1000).toFixed(1) + 'K';
+      return String(Math.round(value));
+    }
+
+    function formatSpread(symbol) {
+      const pip = symbol.decimals >= 4 ? 10000 : symbol.decimals === 3 ? 100 : 10;
+      return (symbol.spread * pip).toFixed(1);
+    }
+
+    function generateCandles(symbol, timeframe, count = 150) {
+      const rand = seededRandom(symbol.code + '-' + timeframe);
+      const tfMs = TF_MINUTES[timeframe] * 60 * 1000;
+      const lastOpenTime = Math.floor(Date.now() / tfMs) * tfMs;
+      const output = [];
+      let price = symbol.basePrice * (1 + (rand() - 0.5) * 0.002);
+      let momentum = 0;
+      const volatility = 0.00026 * Math.min(5, Math.sqrt(TF_MINUTES[timeframe]));
+      const tickSize = Math.pow(10, -symbol.decimals);
+      for (let i = 0; i < count; i++) {
+        const time = lastOpenTime - (count - 1 - i) * tfMs;
+        const open = price;
+        const noise = randomCentered(rand);
+        const swing = Math.sin(i / 5.8 + rand() * 0.8) * volatility * 0.35;
+        const pullback = ((symbol.basePrice - open) / symbol.basePrice) * 0.045;
+        momentum = momentum * 0.42 + noise * volatility + swing + pullback;
+        const close = Math.max(tickSize, open * (1 + momentum));
+        const wickRange = open * (volatility * (0.45 + Math.abs(randomCentered(rand)) * 1.15));
+        const high = Math.max(open, close) + wickRange;
+        const low = Math.max(tickSize, Math.min(open, close) - wickRange * (0.75 + rand() * 0.5));
+        output.push({
+          time,
+          open: roundTo(open, symbol.decimals),
+          high: roundTo(Math.max(high, open, close), symbol.decimals),
+          low: roundTo(Math.min(low, open, close), symbol.decimals),
+          close: roundTo(close, symbol.decimals),
+          volume: Math.round(60000 + Math.abs(noise) * 130000 + rand() * 45000)
+        });
+        price = close;
+      }
+      return output;
+    }
+
+    function tick() {
+      if (!candles.length) return;
+      const tfMs = TF_MINUTES[activeTf] * 60 * 1000;
+      const bucket = Math.floor(Date.now() / tfMs) * tfMs;
+      const last = candles[candles.length - 1];
+      const drift = (Math.random() * 2 - 1) * last.close * 0.00028;
+      const close = roundTo(Math.max(Math.pow(10, -activeSymbol.decimals), last.close + drift), activeSymbol.decimals);
+      if (last.time < bucket) {
+        candles = candles.slice(-149).concat({ time: bucket, open: last.close, high: Math.max(last.close, close), low: Math.min(last.close, close), close, volume: 1 });
+      } else {
+        candles[candles.length - 1] = { ...last, close, high: Math.max(last.high, close), low: Math.min(last.low, close), volume: last.volume + 1 };
+      }
+      positions = positions.map(pos => ({ ...pos, currentPrice: close, pnl: pnlFor(pos, close) }));
+      rightOffset = clamp(rightOffset, 0, Math.max(0, candles.length - visibleCount));
+    }
+
+    function pnlFor(position, currentPrice) {
+      const direction = position.side === 'BUY' ? 1 : -1;
+      const isFx = !['XAUUSD', 'BTCUSD', 'USDJPY'].includes(position.symbol);
+      const isMetal = position.symbol === 'XAUUSD';
+      const contractMultiplier = isFx ? 100000 : isMetal ? 100 : 1;
+      const divisor = isFx ? 1000 : 10;
+      return Number((((currentPrice - position.openPrice) * direction * position.lots * contractMultiplier) / divisor).toFixed(2));
+    }
+
+    function resizeCanvas() {
+      const rect = shell.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+      canvas.style.width = rect.width + 'px';
+      canvas.style.height = rect.height + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      render();
+    }
+
+    function getViewport() {
+      const count = clamp(Math.round(visibleCount), MIN_VISIBLE, Math.max(MIN_VISIBLE, candles.length));
+      const offset = clamp(Math.round(rightOffset), 0, Math.max(0, candles.length - count));
+      return candles.slice(Math.max(0, candles.length - offset - count), candles.length - offset);
+    }
+
+    function render() {
+      const rect = shell.getBoundingClientRect();
+      const width = rect.width;
+      const height = rect.height;
+      ctx.clearRect(0, 0, width, height);
+      const viewport = getViewport();
+      if (!viewport.length) return;
+      const plotEndX = width - PAD_RIGHT;
+      const usableW = Math.max(1, plotEndX - PAD_LEFT - RIGHT_SHIFT_GAP);
+      const usableH = height - PAD_TOP - PAD_BOTTOM;
+      const max = Math.max(...viewport.map(c => c.high));
+      const min = Math.min(...viewport.map(c => c.low));
+      const range = max - min || 1;
+      const paddedMax = max + range * 0.05;
+      const paddedMin = min - range * 0.05;
+      const paddedRange = paddedMax - paddedMin;
+      const candleSlot = usableW / viewport.length;
+      const candleW = Math.max(2, candleSlot * 0.7);
+      const yFor = price => PAD_TOP + ((paddedMax - price) / paddedRange) * usableH;
+
+      ctx.lineWidth = 1;
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      for (let i = 0; i < 5; i++) {
+        const ratio = i / 4;
+        const y = PAD_TOP + ratio * usableH;
+        const price = paddedMax - ratio * paddedRange;
+        ctx.strokeStyle = 'rgba(255,255,255,0.09)';
+        ctx.setLineDash([2, 4]);
+        ctx.beginPath();
+        ctx.moveTo(PAD_LEFT, y);
+        ctx.lineTo(plotEndX, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(246,247,251,0.42)';
+        ctx.fillText(price.toFixed(activeSymbol.decimals), width - 4, y);
+      }
+
+      viewport.forEach((candle, index) => {
+        const x = PAD_LEFT + index * candleSlot + (candleSlot - candleW) / 2;
+        const isBull = candle.close >= candle.open;
+        const color = isBull ? '#55e69a' : '#ff6c5f';
+        const wickX = x + candleW / 2;
+        const bodyTop = yFor(Math.max(candle.open, candle.close));
+        const bodyBottom = yFor(Math.min(candle.open, candle.close));
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(wickX, yFor(candle.high));
+        ctx.lineTo(wickX, yFor(candle.low));
+        ctx.stroke();
+        ctx.fillRect(x, bodyTop, candleW, Math.max(1, bodyBottom - bodyTop));
+      });
+
+      const last = viewport[viewport.length - 1];
+      const lastY = yFor(last.close);
+      ctx.strokeStyle = 'rgba(246,247,251,0.55)';
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(PAD_LEFT, lastY);
+      ctx.lineTo(plotEndX, lastY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const labelX = width - PAD_RIGHT + 2;
+      ctx.fillStyle = '#e9c97a';
+      roundRect(ctx, labelX, lastY - 9, PAD_RIGHT - 4, 18, 3);
+      ctx.fill();
+      ctx.fillStyle = '#06070a';
+      ctx.textAlign = 'center';
+      ctx.font = '600 10px ui-monospace, monospace';
+      ctx.fillText(last.close.toFixed(activeSymbol.decimals), width - PAD_RIGHT / 2, lastY + 1);
+      updateUi(last);
+    }
+
+    function roundRect(context, x, y, w, h, r) {
+      context.beginPath();
+      context.moveTo(x + r, y);
+      context.arcTo(x + w, y, x + w, y + h, r);
+      context.arcTo(x + w, y + h, x, y + h, r);
+      context.arcTo(x, y + h, x, y, r);
+      context.arcTo(x, y, x + w, y, r);
+      context.closePath();
+    }
+
+    function updateUi(last) {
+      const decimals = activeSymbol.decimals;
+      const opening = candles[0]?.open || last.open;
+      const change = last.close - opening;
+      const changePct = opening ? (change / opening) * 100 : 0;
+      const price = formatPrice(last.close, decimals);
+      $('priceMain').textContent = decimals > 0 ? price.slice(0, -1) : price;
+      $('priceTail').textContent = decimals > 0 ? price.slice(-1) : '';
+      $('changeBox').className = 'change ' + (change >= 0 ? 'positive' : 'negative');
+      $('changeValue').textContent = (change >= 0 ? '+' : '') + change.toFixed(decimals);
+      $('changePct').textContent = (change >= 0 ? '+' : '') + changePct.toFixed(2) + '%';
+      $('openValue').textContent = formatPrice(last.open, decimals);
+      $('highValue').textContent = formatPrice(last.high, decimals);
+      $('lowValue').textContent = formatPrice(last.low, decimals);
+      $('closeValue').textContent = formatPrice(last.close, decimals);
+      $('volumeValue').textContent = formatVolume(last.volume);
+      $('spreadValue').textContent = formatSpread(activeSymbol);
+      $('quoteSymbol').textContent = activeSymbol.code;
+      $('midValue').textContent = formatPrice(last.close, decimals);
+      $('spreadPanel').textContent = formatSpread(activeSymbol);
+      $('sellPrice').textContent = formatPrice(roundTo(last.close - activeSymbol.spread / 2, decimals), decimals);
+      $('buyPrice').textContent = formatPrice(roundTo(last.close + activeSymbol.spread / 2, decimals), decimals);
+      renderPositions();
+    }
+
+    function renderPositions() {
+      const list = $('positionsList');
+      const filtered = positions.filter(pos => pos.symbol === activeSymbol.code);
+      $('positionsTitle').textContent = 'OPEN POSITIONS (' + filtered.length + ')';
+      list.innerHTML = '';
+      if (!filtered.length) {
+        list.innerHTML = '<div class="pos-info">No demo positions</div>';
+        return;
+      }
+      filtered.forEach(pos => {
+        const row = document.createElement('div');
+        row.className = 'position-row';
+        row.innerHTML = `
+          <span class="tag ${pos.side === 'BUY' ? 'positive' : 'negative'}">${pos.side}</span>
+          <span class="pos-info">${pos.lots.toFixed(2)} lots @ ${formatPrice(pos.openPrice, activeSymbol.decimals)}</span>
+          <span class="pnl ${pos.pnl >= 0 ? 'positive' : 'negative'}">${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)}</span>
+          <button class="close" type="button">CLOSE</button>
+        `;
+        row.querySelector('.close').addEventListener('click', () => closePosition(pos.id));
+        list.appendChild(row);
+      });
+    }
+
+    function resetChart() {
+      candles = generateCandles(activeSymbol, activeTf);
+      visibleCount = Math.min(DEFAULT_VISIBLE, candles.length);
+      rightOffset = 0;
+      $('symbolCode').textContent = activeSymbol.code;
+      render();
+    }
+
+    function buildSymbolMenu() {
+      symbolMenu.innerHTML = '';
+      Object.values(SYMBOLS).forEach(symbol => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'symbol-option';
+        button.innerHTML = '<strong>' + symbol.code + '</strong><small>' + symbol.name + '</small>';
+        button.addEventListener('click', () => {
+          activeSymbol = symbol;
+          symbolMenu.classList.remove('open');
+          resetChart();
+        });
+        symbolMenu.appendChild(button);
+      });
+    }
+
+    function showNotice(text, side = 'center') {
+      notice.textContent = text;
+      notice.style.setProperty('--start-x', side === 'buy' ? '112px' : side === 'sell' ? '-112px' : '0px');
+      notice.classList.remove('show');
+      void notice.offsetWidth;
+      notice.classList.add('show');
+    }
+
+    function placeTrade(side) {
+      const last = candles[candles.length - 1];
+      if (!last) return;
+      const decimals = activeSymbol.decimals;
+      const price = roundTo(last.close + (side === 'buy' ? activeSymbol.spread / 2 : -activeSymbol.spread / 2), decimals);
+      const position = {
+        id: String(Date.now()) + Math.random().toString(36).slice(2, 7),
+        symbol: activeSymbol.code,
+        side: side === 'buy' ? 'BUY' : 'SELL',
+        lots,
+        openPrice: price,
+        currentPrice: price,
+        pnl: 0
+      };
+      positions.unshift(position);
+      showNotice(position.side + ' trade sent', side);
+      setTimeout(() => showNotice('Trade placed'), 420);
+      renderPositions();
+    }
+
+    function closePosition(id) {
+      positions = positions.filter(pos => pos.id !== id);
+      showNotice('Trade closed');
+      renderPositions();
+    }
+
+    function normalizeLots() {
+      const value = parseFloat($('lotsInput').value);
+      lots = Number.isFinite(value) && value >= 0.01 ? roundTo(value, 2) : 0.01;
+      $('lotsInput').value = lots.toFixed(2);
+    }
+
+    symbolButton.addEventListener('click', () => symbolMenu.classList.toggle('open'));
+    document.addEventListener('click', event => {
+      if (!symbolMenu.contains(event.target) && !symbolButton.contains(event.target)) symbolMenu.classList.remove('open');
+    });
+
+    document.querySelectorAll('.tf').forEach(button => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('.tf').forEach(item => item.classList.remove('active'));
+        button.classList.add('active');
+        activeTf = button.dataset.tf;
+        resetChart();
+      });
+    });
+
+    $('lotDown').addEventListener('click', () => {
+      normalizeLots();
+      lots = Math.max(0.01, roundTo(lots - 0.01, 2));
+      $('lotsInput').value = lots.toFixed(2);
+    });
+
+    $('lotUp').addEventListener('click', () => {
+      normalizeLots();
+      lots = roundTo(lots + 0.01, 2);
+      $('lotsInput').value = lots.toFixed(2);
+    });
+
+    $('lotsInput').addEventListener('blur', normalizeLots);
+    $('lotsInput').addEventListener('input', () => {
+      const value = parseFloat($('lotsInput').value);
+      if (Number.isFinite(value) && value >= 0.01) lots = roundTo(value, 2);
+    });
+
+    $('buyButton').addEventListener('click', () => placeTrade('buy'));
+    $('sellButton').addEventListener('click', () => placeTrade('sell'));
+
+    canvas.addEventListener('pointerdown', event => {
+      dragging = true;
+      dragStartX = event.clientX;
+      dragStartOffset = rightOffset;
+      canvas.classList.add('dragging');
+      canvas.setPointerCapture(event.pointerId);
+    });
+
+    canvas.addEventListener('pointermove', event => {
+      if (!dragging) return;
+      const rect = shell.getBoundingClientRect();
+      const usableW = Math.max(1, rect.width - PAD_LEFT - PAD_RIGHT - RIGHT_SHIFT_GAP);
+      const candleSlot = usableW / Math.max(1, visibleCount);
+      rightOffset = clamp(dragStartOffset + Math.round((event.clientX - dragStartX) / candleSlot), 0, Math.max(0, candles.length - visibleCount));
+      render();
+    });
+
+    canvas.addEventListener('pointerup', event => {
+      dragging = false;
+      canvas.classList.remove('dragging');
+      canvas.releasePointerCapture(event.pointerId);
+    });
+
+    canvas.addEventListener('wheel', event => {
+      event.preventDefault();
+      const direction = Math.sign(event.deltaY);
+      const nextVisible = clamp(visibleCount + direction * 4, MIN_VISIBLE, candles.length);
+      if (nextVisible !== visibleCount) {
+        const center = candles.length - rightOffset - visibleCount / 2;
+        visibleCount = nextVisible;
+        rightOffset = clamp(Math.round(candles.length - center - visibleCount / 2), 0, Math.max(0, candles.length - visibleCount));
+        render();
+      }
+    }, { passive: false });
+
+    function loop(now) {
+      if (now - lastTick > 720) {
+        tick();
+        lastTick = now;
+      }
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    buildSymbolMenu();
+    resetChart();
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
