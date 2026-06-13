@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { PanResponder, StyleSheet, View, type GestureResponderEvent } from 'react-native';
-import Svg, { G, Line, Path, Rect, Text as SvgText } from 'react-native-svg';
+import Svg, { Circle, G, Line, Path, Rect, Text as SvgText } from 'react-native-svg';
 import { colors, fonts } from './theme';
 
 export type Candle = {
@@ -23,6 +23,7 @@ type Props = {
   showVolume?: boolean;
   activeIndicators?: ChartIndicator[];
   objects?: ChartObject[];
+  onObjectsChange?: (objects: ChartObject[]) => void;
   alerts?: ChartPriceAlert[];
 };
 
@@ -30,11 +31,18 @@ export type ChartVisualType = 'candles' | 'bars' | 'line' | 'hollow';
 export type ChartPriceSource = 'bid' | 'ask' | 'mid';
 export type ChartIndicator = 'MA' | 'Bollinger' | 'RSI';
 export type ChartObjectKind = 'trend' | 'horizontal' | 'rectangle' | 'text';
+export type ChartAnchor = {
+  time: number;
+  price: number;
+};
 export type ChartObject = {
   id: string;
   kind: ChartObjectKind;
   label: string;
+  p1?: ChartAnchor;
+  p2?: ChartAnchor;
   hidden?: boolean;
+  locked?: boolean;
 };
 export type ChartPriceAlert = {
   id: string;
@@ -42,11 +50,13 @@ export type ChartPriceAlert = {
   direction: 'above' | 'below';
 };
 
-const DEFAULT_VISIBLE_CANDLES = 52;
-const MIN_VISIBLE_CANDLES = 18;
+const DEFAULT_VISIBLE_CANDLES = 20;
+const MIN_VISIBLE_CANDLES = 1;
 const CHART_PAD_LEFT = 8;
 const CHART_PAD_RIGHT = 56;
 const CHART_RIGHT_SHIFT_GAP = 42;
+const DRAWING_HIT_RADIUS = 16;
+const DRAWING_HANDLE_RADIUS = 5;
 
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
@@ -67,6 +77,22 @@ const buildPath = (points: Array<{ x: number; y: number }>) => {
 
 const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
 
+const distance = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+  Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2));
+
+const distanceToSegment = (
+  point: { x: number; y: number },
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+) => {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq === 0) return distance(point, a);
+  const t = clamp(((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSq, 0, 1);
+  return distance(point, { x: a.x + t * dx, y: a.y + t * dy });
+};
+
 export const CandlestickChart = React.memo(({
   data,
   width,
@@ -78,15 +104,25 @@ export const CandlestickChart = React.memo(({
   showVolume = false,
   activeIndicators = [],
   objects = [],
+  onObjectsChange,
   alerts = [],
 }: Props) => {
   const defaultVisible = Math.min(DEFAULT_VISIBLE_CANDLES, data.length);
   const minVisible = Math.min(MIN_VISIBLE_CANDLES, Math.max(1, data.length));
   const [visibleCount, setVisibleCount] = useState(defaultVisible);
   const [rightOffset, setRightOffset] = useState(0);
+  const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
   const gestureStartVisibleRef = useRef(defaultVisible);
   const gestureStartOffsetRef = useRef(0);
   const gestureStartDistanceRef = useRef<number | null>(null);
+  const objectGestureRef = useRef<{
+    id: string;
+    target: 'p1' | 'p2' | 'body';
+    startX: number;
+    startY: number;
+    startPrice: number;
+    original: ChartObject;
+  } | null>(null);
 
   useEffect(() => {
     setVisibleCount(defaultVisible);
@@ -102,66 +138,10 @@ export const CandlestickChart = React.memo(({
       data: data.slice(start, end),
       count,
       offset,
+      start,
+      end,
     };
   }, [data, minVisible, rightOffset, visibleCount]);
-
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: (event) => event.nativeEvent.touches.length >= 2,
-        onStartShouldSetPanResponderCapture: (event) => event.nativeEvent.touches.length >= 2,
-        onMoveShouldSetPanResponder: (event, gesture) =>
-          event.nativeEvent.touches.length >= 2 || Math.abs(gesture.dx) > 8,
-        onMoveShouldSetPanResponderCapture: (event) => event.nativeEvent.touches.length >= 2,
-        onPanResponderGrant: (event) => {
-          gestureStartVisibleRef.current = viewport.count;
-          gestureStartOffsetRef.current = viewport.offset;
-          gestureStartDistanceRef.current = getPinchDistance(event);
-        },
-        onPanResponderMove: (event, gesture) => {
-          if (data.length <= 1) return;
-          const distance = getPinchDistance(event);
-          if (distance) {
-            const startDistance = gestureStartDistanceRef.current ?? distance;
-            if (!gestureStartDistanceRef.current) gestureStartDistanceRef.current = distance;
-            const nextVisible = clamp(
-              Math.round(gestureStartVisibleRef.current * (startDistance / distance)),
-              minVisible,
-              data.length,
-            );
-            const centerIndex =
-              data.length - gestureStartOffsetRef.current - gestureStartVisibleRef.current / 2;
-            setVisibleCount(nextVisible);
-            setRightOffset(
-              clamp(
-                Math.round(data.length - centerIndex - nextVisible / 2),
-                0,
-                Math.max(0, data.length - nextVisible),
-              ),
-            );
-            return;
-          }
-
-          gestureStartDistanceRef.current = null;
-          const usableW = Math.max(1, width - CHART_PAD_LEFT - CHART_PAD_RIGHT - CHART_RIGHT_SHIFT_GAP);
-          const candleSlot = usableW / Math.max(1, gestureStartVisibleRef.current);
-          setRightOffset(
-            clamp(
-              gestureStartOffsetRef.current + Math.round(gesture.dx / candleSlot),
-              0,
-              Math.max(0, data.length - viewport.count),
-            ),
-          );
-        },
-        onPanResponderRelease: () => {
-          gestureStartDistanceRef.current = null;
-        },
-        onPanResponderTerminate: () => {
-          gestureStartDistanceRef.current = null;
-        },
-      }),
-    [data.length, minVisible, viewport.count, viewport.offset, width],
-  );
 
   const layout = useMemo(() => {
     if (viewport.data.length === 0 || width <= 0 || height <= 0) return null;
@@ -187,9 +167,30 @@ export const CandlestickChart = React.memo(({
     const paddedMin = min - range * 0.05;
     const paddedRange = paddedMax - paddedMin;
     const candleSlot = usableW / chartData.length;
-    const candleW = Math.max(2, candleSlot * 0.7);
+    const candleW = Math.max(3, Math.min(12, candleSlot * 0.68));
     const yFor = (price: number) => padTop + ((paddedMax - price) / paddedRange) * usableH;
     const xFor = (index: number) => CHART_PAD_LEFT + index * candleSlot + candleSlot / 2;
+    const indexForTime = (time: number) => {
+      const exact = data.findIndex((candle) => candle.time === time);
+      if (exact >= 0) return exact;
+      let nearest = 0;
+      let nearestDistance = Number.POSITIVE_INFINITY;
+      data.forEach((candle, index) => {
+        const nextDistance = Math.abs(candle.time - time);
+        if (nextDistance < nearestDistance) {
+          nearest = index;
+          nearestDistance = nextDistance;
+        }
+      });
+      return nearest;
+    };
+    const xForTime = (time: number) => CHART_PAD_LEFT + (indexForTime(time) - viewport.start) * candleSlot + candleSlot / 2;
+    const timeForX = (x: number) => {
+      const index = clamp(Math.round(viewport.start + (x - CHART_PAD_LEFT) / candleSlot - 0.5), 0, data.length - 1);
+      return data[index]?.time ?? chartData[chartData.length - 1].time;
+    };
+    const priceForY = (y: number) => paddedMax - ((y - padTop) / usableH) * paddedRange - sourceOffset;
+    const yForObjectPrice = (price: number) => yFor(price + sourceOffset);
     const maxVolume = Math.max(...chartData.map((candle) => candle.volume), 1);
     const volumeTop = padTop + usableH + 10;
     const volumeBottom = height - padBottom + 5;
@@ -272,11 +273,207 @@ export const CandlestickChart = React.memo(({
       bollingerLowerPath: buildPath(bollinger.map((point) => ({ x: point.x, y: point.lower }))),
       rsiPath: buildPath(rsiPoints),
       alertLines: alerts.map((alert) => ({ ...alert, y: yFor(alert.price + sourceOffset) })),
-      objectLines: objects.filter((object) => !object.hidden),
+      objectShapes: objects
+        .filter((object) => !object.hidden && object.p1)
+        .map((object) => {
+          const p1 = object.p1
+            ? { ...object.p1, x: xForTime(object.p1.time), y: yForObjectPrice(object.p1.price) }
+            : null;
+          const p2 = object.p2
+            ? { ...object.p2, x: xForTime(object.p2.time), y: yForObjectPrice(object.p2.price) }
+            : null;
+          return { object, p1, p2 };
+        }),
+      candleSlot,
+      indexForTime,
+      timeForX,
+      priceForY,
+      xForTime,
+      yForObjectPrice,
       volumeTop,
       volumeBottom,
     };
-  }, [activeIndicators, alerts, height, objects, priceSource, showVolume, spread, viewport.data, width]);
+  }, [activeIndicators, alerts, data, height, objects, priceSource, showVolume, spread, viewport.data, viewport.start, width]);
+
+  const panResponder = useMemo(
+    () => {
+      const eventPoint = (event: GestureResponderEvent) => ({
+        x: event.nativeEvent.locationX,
+        y: event.nativeEvent.locationY,
+      });
+
+      const hitTest = (point: { x: number; y: number }) => {
+        if (!layout) return null;
+        for (let index = layout.objectShapes.length - 1; index >= 0; index--) {
+          const shape = layout.objectShapes[index];
+          const { object, p1, p2 } = shape;
+          if (!p1 || object.locked) continue;
+
+          if (selectedObjectId === object.id) {
+            if (distance(point, p1) <= DRAWING_HIT_RADIUS) return { object, target: 'p1' as const };
+            if (p2 && distance(point, p2) <= DRAWING_HIT_RADIUS) return { object, target: 'p2' as const };
+          }
+
+          if (object.kind === 'horizontal' && Math.abs(point.y - p1.y) <= DRAWING_HIT_RADIUS) {
+            return { object, target: 'body' as const };
+          }
+          if (object.kind === 'text' && distance(point, p1) <= DRAWING_HIT_RADIUS * 2) {
+            return { object, target: 'body' as const };
+          }
+          if ((object.kind === 'trend' || object.kind === 'rectangle') && p2) {
+            if (object.kind === 'trend' && distanceToSegment(point, p1, p2) <= DRAWING_HIT_RADIUS) {
+              return { object, target: 'body' as const };
+            }
+            if (object.kind === 'rectangle') {
+              const left = Math.min(p1.x, p2.x);
+              const right = Math.max(p1.x, p2.x);
+              const top = Math.min(p1.y, p2.y);
+              const bottom = Math.max(p1.y, p2.y);
+              const onEdge =
+                point.x >= left - DRAWING_HIT_RADIUS &&
+                point.x <= right + DRAWING_HIT_RADIUS &&
+                point.y >= top - DRAWING_HIT_RADIUS &&
+                point.y <= bottom + DRAWING_HIT_RADIUS &&
+                (Math.abs(point.x - left) <= DRAWING_HIT_RADIUS ||
+                  Math.abs(point.x - right) <= DRAWING_HIT_RADIUS ||
+                  Math.abs(point.y - top) <= DRAWING_HIT_RADIUS ||
+                  Math.abs(point.y - bottom) <= DRAWING_HIT_RADIUS);
+              const inside = point.x >= left && point.x <= right && point.y >= top && point.y <= bottom;
+              if (onEdge || inside) return { object, target: 'body' as const };
+            }
+          }
+        }
+        return null;
+      };
+
+      const updateObject = (updated: ChartObject) => {
+        onObjectsChange?.(objects.map((object) => (object.id === updated.id ? updated : object)));
+      };
+
+      const shiftAnchor = (anchor: ChartAnchor, deltaIndex: number, priceDelta: number) => {
+        const index = layout
+          ? clamp(layout.indexForTime(anchor.time) + deltaIndex, 0, data.length - 1)
+          : 0;
+        return {
+          time: data[index]?.time ?? anchor.time,
+          price: anchor.price + priceDelta,
+        };
+      };
+
+      return PanResponder.create({
+        onStartShouldSetPanResponder: (event) => {
+          if (event.nativeEvent.touches.length >= 2) return true;
+          return !!hitTest(eventPoint(event));
+        },
+        onStartShouldSetPanResponderCapture: (event) => event.nativeEvent.touches.length >= 2,
+        onMoveShouldSetPanResponder: (event, gesture) => {
+          if (event.nativeEvent.touches.length >= 2) return true;
+          return !!hitTest(eventPoint(event)) || Math.abs(gesture.dx) > 8;
+        },
+        onMoveShouldSetPanResponderCapture: (event) => event.nativeEvent.touches.length >= 2,
+        onPanResponderGrant: (event) => {
+          gestureStartVisibleRef.current = viewport.count;
+          gestureStartOffsetRef.current = viewport.offset;
+          gestureStartDistanceRef.current = getPinchDistance(event);
+          objectGestureRef.current = null;
+
+          const hit = event.nativeEvent.touches.length >= 2 ? null : hitTest(eventPoint(event));
+          if (hit && layout) {
+            const point = eventPoint(event);
+            setSelectedObjectId(hit.object.id);
+            objectGestureRef.current = {
+              id: hit.object.id,
+              target: hit.target,
+              startX: point.x,
+              startY: point.y,
+              startPrice: layout.priceForY(point.y),
+              original: hit.object,
+            };
+          } else if (event.nativeEvent.touches.length < 2) {
+            setSelectedObjectId(null);
+          }
+        },
+        onPanResponderMove: (event, gesture) => {
+          if (data.length <= 1) return;
+
+          const objectGesture = objectGestureRef.current;
+          if (objectGesture && layout) {
+            const point = eventPoint(event);
+            const original = objectGesture.original;
+            const nextPrice = layout.priceForY(point.y);
+            const priceDelta = nextPrice - objectGesture.startPrice;
+            const deltaIndex = Math.round((point.x - objectGesture.startX) / layout.candleSlot);
+
+            if (objectGesture.target === 'body') {
+              const next: ChartObject = {
+                ...original,
+                p1: original.p1 ? shiftAnchor(original.p1, deltaIndex, priceDelta) : original.p1,
+                p2: original.p2 ? shiftAnchor(original.p2, deltaIndex, priceDelta) : original.p2,
+              };
+              updateObject(next);
+              return;
+            }
+
+            const movedAnchor = {
+              time: layout.timeForX(point.x),
+              price: nextPrice,
+            };
+            if (original.kind === 'horizontal') {
+              updateObject({ ...original, p1: { ...(original.p1 ?? movedAnchor), price: nextPrice } });
+              return;
+            }
+            updateObject({
+              ...original,
+              [objectGesture.target]: movedAnchor,
+            });
+            return;
+          }
+
+          const distance = getPinchDistance(event);
+          if (distance) {
+            const startDistance = gestureStartDistanceRef.current ?? distance;
+            if (!gestureStartDistanceRef.current) gestureStartDistanceRef.current = distance;
+            const nextVisible = clamp(
+              Math.round(gestureStartVisibleRef.current * (startDistance / distance)),
+              minVisible,
+              data.length,
+            );
+            const centerIndex =
+              data.length - gestureStartOffsetRef.current - gestureStartVisibleRef.current / 2;
+            setVisibleCount(nextVisible);
+            setRightOffset(
+              clamp(
+                Math.round(data.length - centerIndex - nextVisible / 2),
+                0,
+                Math.max(0, data.length - nextVisible),
+              ),
+            );
+            return;
+          }
+
+          gestureStartDistanceRef.current = null;
+          const usableW = Math.max(1, width - CHART_PAD_LEFT - CHART_PAD_RIGHT - CHART_RIGHT_SHIFT_GAP);
+          const candleSlot = usableW / Math.max(1, gestureStartVisibleRef.current);
+          setRightOffset(
+            clamp(
+              gestureStartOffsetRef.current + Math.round(gesture.dx / candleSlot),
+              0,
+              Math.max(0, data.length - viewport.count),
+            ),
+          );
+        },
+        onPanResponderRelease: () => {
+          gestureStartDistanceRef.current = null;
+          objectGestureRef.current = null;
+        },
+        onPanResponderTerminate: () => {
+          gestureStartDistanceRef.current = null;
+          objectGestureRef.current = null;
+        },
+      });
+    },
+    [data, layout, minVisible, objects, onObjectsChange, selectedObjectId, viewport.count, viewport.offset, width],
+  );
 
   if (!layout) return null;
 
@@ -379,17 +576,88 @@ export const CandlestickChart = React.memo(({
         {layout.maPath ? <Path d={layout.maPath} stroke={colors.accent} strokeWidth={1.5} fill="none" /> : null}
         {layout.rsiPath ? <Path d={layout.rsiPath} stroke="#A78BFA" strokeWidth={1.4} fill="none" opacity={0.9} /> : null}
 
-        {layout.objectLines.map((object, index) => {
-          if (object.kind === 'trend') {
-            return <Line key={object.id} x1={width * 0.18} x2={width * 0.74} y1={height * (0.68 - index * 0.04)} y2={height * (0.32 + index * 0.03)} stroke="#60A5FA" strokeWidth={1.4} />;
-          }
-          if (object.kind === 'rectangle') {
-            return <Rect key={object.id} x={width * 0.28} y={height * 0.26} width={width * 0.34} height={height * 0.2} fill="rgba(96,165,250,0.08)" stroke="#60A5FA" strokeWidth={1.2} strokeDasharray="4 4" />;
-          }
-          if (object.kind === 'text') {
-            return <SvgText key={object.id} x={width * 0.18} y={height * 0.2 + index * 16} fontSize={11} fontFamily={fonts.bodySemi} fill={colors.accent}>{object.label}</SvgText>;
-          }
-          return <Line key={object.id} x1={CHART_PAD_LEFT} x2={layout.plotEndX} y1={layout.lastY - 28 - index * 8} y2={layout.lastY - 28 - index * 8} stroke="#60A5FA" strokeWidth={1.2} strokeDasharray="6 4" />;
+        {layout.objectShapes.map(({ object, p1, p2 }) => {
+          if (!p1) return null;
+          const selected = selectedObjectId === object.id;
+          const objectColor = object.kind === 'horizontal' ? '#FBBF24' : '#60A5FA';
+          const common = {
+            stroke: objectColor,
+            strokeWidth: selected ? 1.8 : 1.25,
+          };
+
+          return (
+            <G key={object.id} opacity={selected ? 1 : 0.88}>
+              {object.kind === 'trend' && p2 ? (
+                <>
+                  <Line x1={p1.x} x2={p2.x} y1={p1.y} y2={p2.y} {...common} />
+                  {selected ? (
+                    <SvgText
+                      x={(p1.x + p2.x) / 2}
+                      y={(p1.y + p2.y) / 2 - 8}
+                      fontSize={9}
+                      fontFamily={fonts.mono}
+                      fill={objectColor}
+                      textAnchor="middle"
+                    >
+                      {(p2.price - p1.price).toFixed(decimals)}
+                    </SvgText>
+                  ) : null}
+                </>
+              ) : null}
+
+              {object.kind === 'horizontal' ? (
+                <>
+                  <Line
+                    x1={CHART_PAD_LEFT}
+                    x2={layout.plotEndX}
+                    y1={p1.y}
+                    y2={p1.y}
+                    {...common}
+                    strokeDasharray="6 4"
+                  />
+                  <Rect x={layout.plotEndX + 4} y={p1.y - 8} width={CHART_PAD_RIGHT - 8} height={16} rx={3} fill={objectColor} />
+                  <SvgText
+                    x={width - 4}
+                    y={p1.y + 3}
+                    fontSize={9}
+                    fontFamily={fonts.mono}
+                    fill={colors.bg}
+                    textAnchor="end"
+                    fontWeight="600"
+                  >
+                    {p1.price.toFixed(decimals)}
+                  </SvgText>
+                </>
+              ) : null}
+
+              {object.kind === 'rectangle' && p2 ? (
+                <Rect
+                  x={Math.min(p1.x, p2.x)}
+                  y={Math.min(p1.y, p2.y)}
+                  width={Math.abs(p2.x - p1.x)}
+                  height={Math.abs(p2.y - p1.y)}
+                  fill="rgba(96,165,250,0.08)"
+                  {...common}
+                  strokeDasharray={selected ? undefined : '4 4'}
+                />
+              ) : null}
+
+              {object.kind === 'text' ? (
+                <SvgText x={p1.x} y={p1.y} fontSize={11} fontFamily={fonts.bodySemi} fill={colors.accent}>
+                  {object.label}
+                </SvgText>
+              ) : null}
+
+              {selected ? (
+                <>
+                  <Circle cx={p1.x} cy={p1.y} r={DRAWING_HANDLE_RADIUS} fill={colors.bg} stroke={objectColor} strokeWidth={1.5} />
+                  {p2 ? (
+                    <Circle cx={p2.x} cy={p2.y} r={DRAWING_HANDLE_RADIUS} fill={colors.bg} stroke={objectColor} strokeWidth={1.5} />
+                  ) : null}
+                </>
+              ) : null}
+            </G>
+          );
         })}
 
         {layout.alertLines.map((alert) => (

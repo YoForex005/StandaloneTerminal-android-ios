@@ -4,6 +4,7 @@ import {
   Animated,
   Easing,
   PanResponder,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,7 +13,7 @@ import {
   View,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
 import {
   CandlestickChart,
@@ -46,6 +47,7 @@ type TradeNoticeState = {
 };
 
 type FeaturePanel = 'settings' | 'indicators' | 'objects' | 'alerts' | 'analytics' | 'specification' | 'more';
+type FullChartPanel = 'symbols' | 'timeframes' | 'indicators' | 'settings' | 'account' | 'lots';
 type ChartColorScheme = 'RTX-5' | 'Classic' | 'Emerald' | 'Mono';
 
 const PANEL_HANDLE_HEIGHT = 104;
@@ -88,6 +90,33 @@ const fmtVolume = (n: number) => {
 const fmtSpread = (symbol: MarketSymbol) => {
   const pip = symbol.decimals >= 4 ? 10000 : symbol.decimals === 3 ? 100 : 10;
   return (symbol.spread * pip).toFixed(1);
+};
+
+const fmtChartTime = (time: number) =>
+  new Date(time).toLocaleString('en-US', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+
+const shouldStartFullChart = () =>
+  Platform.OS === 'web' &&
+  typeof window !== 'undefined' &&
+  new URLSearchParams(window.location.search).get('fullChart') === '1';
+
+const getInitialFullChartPanel = (): FullChartPanel | null => {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
+  const panel = new URLSearchParams(window.location.search).get('panel');
+  return panel === 'symbols' ||
+    panel === 'timeframes' ||
+    panel === 'indicators' ||
+    panel === 'settings' ||
+    panel === 'account' ||
+    panel === 'lots'
+    ? panel
+    : null;
 };
 
 const splitLastDigit = (n: number, decimals: number) => {
@@ -170,15 +199,18 @@ const DarkMesh = () => (
 
 export const StandaloneTerminal = () => {
   const initialSymbol = SYMBOLS[defaultSymbol] ? defaultSymbol : 'EURUSD';
+  const insets = useSafeAreaInsets();
   const [symbolKey, setSymbolKey] = useState(initialSymbol);
   const [tf, setTf] = useState<Timeframe>('M5');
   const [candles, setCandles] = useState(() => generateCandles(SYMBOLS[initialSymbol], 'M5'));
   const [showSymbolPicker, setShowSymbolPicker] = useState(false);
   const [chartWidth, setChartWidth] = useState(0);
   const [chartHeight, setChartHeight] = useState(0);
-  const [fullChart, setFullChart] = useState(false);
+  const [fullChart, setFullChart] = useState(shouldStartFullChart);
   const [fullChartWidth, setFullChartWidth] = useState(0);
   const [fullChartHeight, setFullChartHeight] = useState(0);
+  const [fullChartPanel, setFullChartPanel] = useState<FullChartPanel | null>(getInitialFullChartPanel);
+  const [fullChartLots, setFullChartLots] = useState(Number.isFinite(defaultLots) && defaultLots >= 0.01 ? defaultLots : 0.5);
   const [featurePanel, setFeaturePanel] = useState<FeaturePanel | null>(null);
   const [chartType, setChartType] = useState<ChartVisualType>('candles');
   const [priceSource, setPriceSource] = useState<ChartPriceSource>('mid');
@@ -198,7 +230,10 @@ export const StandaloneTerminal = () => {
   const livePulse = useRef(new Animated.Value(0)).current;
 
   const openFullChart = useCallback(() => setFullChart(true), []);
-  const closeFullChart = useCallback(() => setFullChart(false), []);
+  const closeFullChart = useCallback(() => {
+    setFullChart(false);
+    setFullChartPanel(null);
+  }, []);
   const toggleIndicator = useCallback((indicator: ChartIndicator) => {
     setActiveIndicators((current) =>
       current.includes(indicator)
@@ -207,21 +242,76 @@ export const StandaloneTerminal = () => {
     );
   }, []);
   const addChartObject = useCallback((kind: ChartObject['kind']) => {
+    const recent = candles.slice(-Math.min(52, candles.length));
+    const fallback = candles[candles.length - 1] ?? {
+      time: Date.now(),
+      open: symbol.basePrice,
+      high: symbol.basePrice,
+      low: symbol.basePrice,
+      close: symbol.basePrice,
+      volume: 0,
+    };
+    const left = recent[Math.max(0, Math.floor(recent.length * 0.28))] ?? fallback;
+    const right = recent[Math.max(0, Math.floor(recent.length * 0.78))] ?? fallback;
+    const low = recent.length ? Math.min(...recent.map((candle) => candle.low)) : fallback.low;
+    const high = recent.length ? Math.max(...recent.map((candle) => candle.high)) : fallback.high;
+    const range = Math.max(high - low, Math.pow(10, -symbol.decimals));
     const labelByKind: Record<ChartObject['kind'], string> = {
       trend: 'Trend line',
       horizontal: 'Horizontal line',
       rectangle: 'Highlight box',
-      text: 'Text label',
+      text: 'Text note',
     };
-    setChartObjects((current) => [
-      ...current,
-      {
+
+    setChartObjects((current) => {
+      const index = current.length + 1;
+      const base = {
         id: `obj-${Date.now()}-${current.length}`,
         kind,
-        label: `${labelByKind[kind]} ${current.length + 1}`,
-      },
-    ]);
-  }, []);
+        label: `${labelByKind[kind]} ${index}`,
+      };
+
+      if (kind === 'horizontal') {
+        return [
+          ...current,
+          {
+            ...base,
+            p1: { time: fallback.time, price: roundTo(fallback.close, symbol.decimals) },
+          },
+        ];
+      }
+
+      if (kind === 'rectangle') {
+        return [
+          ...current,
+          {
+            ...base,
+            p1: { time: left.time, price: roundTo(high - range * 0.16, symbol.decimals) },
+            p2: { time: right.time, price: roundTo(low + range * 0.24, symbol.decimals) },
+          },
+        ];
+      }
+
+      if (kind === 'text') {
+        return [
+          ...current,
+          {
+            ...base,
+            p1: { time: right.time, price: roundTo(high - range * 0.2, symbol.decimals) },
+          },
+        ];
+      }
+
+      return [
+        ...current,
+        {
+          ...base,
+          p1: { time: left.time, price: roundTo(low + range * 0.3, symbol.decimals) },
+          p2: { time: right.time, price: roundTo(high - range * 0.2, symbol.decimals) },
+        },
+      ];
+    });
+  }, [candles, symbol.basePrice, symbol.decimals]);
   const toggleChartObjectHidden = useCallback((id: string) => {
     setChartObjects((current) =>
       current.map((object) => (object.id === id ? { ...object, hidden: !object.hidden } : object)),
@@ -319,6 +409,13 @@ export const StandaloneTerminal = () => {
       vol: visible.reduce((acc, candle) => acc + candle.volume, 0),
     };
   }, [candles]);
+  const chartTimeLabels = useMemo(() => {
+    const visible = candles.slice(-Math.min(20, candles.length));
+    if (visible.length === 0) return [];
+    const middle = visible[Math.floor(visible.length / 2)] ?? visible[0];
+    const last = visible[visible.length - 1] ?? middle;
+    return [visible[0], middle, last].map((candle) => fmtChartTime(candle.time));
+  }, [candles]);
 
   useEffect(() => {
     if (!lastCandle) return;
@@ -358,11 +455,73 @@ export const StandaloneTerminal = () => {
     [showTradeNotice],
   );
 
+  const fullChartSellPrice = lastCandle ? roundTo(lastCandle.close - symbol.spread / 2, symbol.decimals) : null;
+  const fullChartBuyPrice = lastCandle ? roundTo(lastCandle.close + symbol.spread / 2, symbol.decimals) : null;
+  const demoEquity = 70000 + positions.reduce((sum, position) => sum + position.pnl, 0);
+  const symbolPositions = positions.filter((position) => position.symbol === symbol.code);
+  const symbolPnl = symbolPositions.reduce((sum, position) => sum + position.pnl, 0);
+  const updateFullChartLots = useCallback((nextLots: number) => {
+    setFullChartLots(roundTo(Math.max(0.01, Math.min(100, nextLots)), 2));
+  }, []);
+  const submitFullChartTrade = useCallback(
+    (side: 'buy' | 'sell') => {
+      const price = side === 'buy' ? fullChartBuyPrice : fullChartSellPrice;
+      if (price == null) return;
+      placeDemoTrade(side, fullChartLots, price);
+    },
+    [fullChartBuyPrice, fullChartLots, fullChartSellPrice, placeDemoTrade],
+  );
+
+  const tradeNoticeOverlay = tradeNotice ? (
+    <View pointerEvents="none" style={s.tradeNoticeWrap}>
+      <Animated.View
+        style={[
+          s.tradeNotice,
+          {
+            opacity: tradeNoticeAnim,
+            transform: [
+              {
+                translateX: tradeNoticeAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [tradeNotice.side === 'buy' ? 112 : tradeNotice.side === 'sell' ? -112 : 0, 0],
+                }),
+              },
+              {
+                translateY: tradeNoticeAnim.interpolate({ inputRange: [0, 1], outputRange: [104, 0] }),
+              },
+              {
+                scale: tradeNoticeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.82, 1] }),
+              },
+            ],
+          },
+        ]}
+      >
+        <View style={s.tradeNoticeDot} />
+        <Text style={s.tradeNoticeText}>{tradeNotice.message}</Text>
+      </Animated.View>
+    </View>
+  ) : null;
+  const fullChartTopOffset = Math.max(insets.top, Platform.OS === 'web' ? 18 : 10) + 10;
+  const fullChartBottomOffset = Math.max(insets.bottom, Platform.OS === 'android' ? 12 : 8) + 10;
+  const fullChartPanelPlacement =
+    fullChartPanel === 'symbols' || fullChartPanel === 'account'
+      ? { top: fullChartTopOffset + 44, left: 16, right: 16 }
+      : { left: 16, right: 16, bottom: fullChartBottomOffset + 142 };
+
   if (fullChart) {
     return (
-      <SafeAreaView edges={['top', 'bottom']} style={s.root}>
+      <SafeAreaView edges={[]} style={s.root}>
         <View
-          style={s.fullChartOnlyWrap}
+          style={[
+            s.fullChartSection,
+            {
+              top: fullChartTopOffset + 48,
+              bottom: fullChartBottomOffset + 112,
+            },
+          ]}
+        >
+          <View
+            style={s.fullChartOnlyWrap}
           onLayout={(event) => {
             const nextWidth = Math.floor(event.nativeEvent.layout.width);
             const nextHeight = Math.floor(event.nativeEvent.layout.height);
@@ -382,17 +541,329 @@ export const StandaloneTerminal = () => {
               showVolume={showVolumePane}
               activeIndicators={activeIndicators}
               objects={chartObjects}
+              onObjectsChange={setChartObjects}
               alerts={priceAlerts}
             />
           ) : null}
+          </View>
+          <View style={s.chartAxisFrame}>
+            {chartTimeLabels.map((label, index) => (
+              <Text
+                key={`full-${label}-${index}`}
+                style={[
+                  s.chartAxisText,
+                  index === 1 && s.chartAxisTextCenter,
+                  index === 2 && s.chartAxisTextEnd,
+                ]}
+                numberOfLines={1}
+              >
+                {label}
+              </Text>
+            ))}
+          </View>
         </View>
-        <Pressable
-          onPress={closeFullChart}
-          hitSlop={10}
-          style={({ pressed }) => [s.fullChartClose, { opacity: pressed ? 0.65 : 1 }]}
-        >
-          <Feather name="x" size={16} color={colors.ink} />
-        </Pressable>
+        <View style={[s.fullChartTopBar, { top: fullChartTopOffset }]}>
+          <Pressable
+            onPress={() => {
+              setFullChartPanel((panel) => (panel === 'symbols' ? null : 'symbols'));
+            }}
+            style={({ pressed }) => [s.fullChartSymbolBtn, { opacity: pressed ? 0.72 : 1 }]}
+          >
+            <View style={s.fullChartSymbolIcon}>
+              <Feather name="dollar-sign" size={12} color={colors.bg} />
+            </View>
+            <Feather name="chevron-down" size={14} color={colors.inkSecondary} />
+          </Pressable>
+          <Pressable
+            onPress={() => setFullChartPanel((panel) => (panel === 'account' ? null : 'account'))}
+            style={({ pressed }) => [s.fullChartAccountPill, { opacity: pressed ? 0.72 : 1 }]}
+          >
+            <Text style={s.fullChartDemoBadge} numberOfLines={1}>Demo</Text>
+            <Text style={s.fullChartBalanceText} numberOfLines={1}>{fmtPrice(demoEquity, 2)} USD</Text>
+            <Feather name="more-vertical" size={14} color={colors.inkSecondary} />
+          </Pressable>
+          <Pressable onPress={closeFullChart} hitSlop={8} style={({ pressed }) => [s.fullChartExpandBtn, { opacity: pressed ? 0.72 : 1 }]}>
+            <Feather name="minimize-2" size={17} color={colors.ink} />
+          </Pressable>
+        </View>
+        <View style={[s.fullChartToolRow, { bottom: fullChartBottomOffset + 150 }]}>
+          <Pressable
+            onPress={() => setFullChartPanel((panel) => (panel === 'timeframes' ? null : 'timeframes'))}
+            style={({ pressed }) => [s.fullChartToolBtn, { opacity: pressed ? 0.72 : 1 }]}
+          >
+            <Text style={s.fullChartToolText}>{tf.toLowerCase()}</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setFullChartPanel((panel) => (panel === 'settings' ? null : 'settings'))}
+            style={({ pressed }) => [s.fullChartToolBtn, { opacity: pressed ? 0.72 : 1 }]}
+          >
+            <Feather name="sliders" size={15} color={colors.ink} />
+          </Pressable>
+          <Pressable
+            onPress={() => setFullChartPanel((panel) => (panel === 'indicators' ? null : 'indicators'))}
+            style={({ pressed }) => [s.fullChartToolBtn, { opacity: pressed ? 0.72 : 1 }]}
+          >
+            <Text style={s.fullChartToolText}>fx</Text>
+          </Pressable>
+        </View>
+        {fullChartPanel ? (
+          <>
+            <Pressable style={s.fullChartPanelBackdrop} onPress={() => setFullChartPanel(null)} />
+            <View
+              style={[
+                s.fullChartFloatingPanel,
+                fullChartPanelPlacement,
+              ]}
+            >
+              {fullChartPanel === 'symbols' ? (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.fullChartPanelRow}>
+                  {SYMBOL_LIST.map((item) => {
+                    const active = item.code === symbol.code;
+                    return (
+                      <Pressable
+                        key={item.code}
+                        onPress={() => {
+                          setSymbolKey(item.code);
+                          setFullChartPanel(null);
+                        }}
+                        style={({ pressed }) => [
+                          s.fullChartPanelChip,
+                          active && s.fullChartPanelChipActive,
+                          { opacity: pressed ? 0.75 : 1 },
+                        ]}
+                      >
+                        <Text style={[s.fullChartPanelChipText, active && s.fullChartPanelChipTextActive]}>{item.code}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              ) : null}
+
+              {fullChartPanel === 'account' ? (
+                <View style={s.fullChartPanelColumn}>
+                  <View style={s.fullChartPanelMetricRow}>
+                    <Text style={s.fullChartPanelMetricLabel}>Equity</Text>
+                    <Text style={s.fullChartPanelMetricValue}>{fmtPrice(demoEquity, 2)} USD</Text>
+                  </View>
+                  <View style={s.fullChartPanelMetricRow}>
+                    <Text style={s.fullChartPanelMetricLabel}>{symbol.code} positions</Text>
+                    <Text style={s.fullChartPanelMetricValue}>{symbolPositions.length}</Text>
+                  </View>
+                  <View style={s.fullChartPanelMetricRow}>
+                    <Text style={s.fullChartPanelMetricLabel}>Floating P/L</Text>
+                    <Text style={[s.fullChartPanelMetricValue, { color: symbolPnl >= 0 ? colors.positive : colors.danger }]}>
+                      {symbolPnl >= 0 ? '+' : ''}${symbolPnl.toFixed(2)}
+                    </Text>
+                  </View>
+                  <View style={s.fullChartPanelRow}>
+                    <Pressable
+                      onPress={() => {
+                        addPriceAlert();
+                        setFullChartPanel(null);
+                      }}
+                      style={({ pressed }) => [s.fullChartPanelActionBtn, { opacity: pressed ? 0.75 : 1 }]}
+                    >
+                      <Feather name="bell" size={14} color={colors.accent} />
+                      <Text style={s.fullChartPanelActionText}>Alert</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => setFullChartPanel('lots')}
+                      style={({ pressed }) => [s.fullChartPanelActionBtn, { opacity: pressed ? 0.75 : 1 }]}
+                    >
+                      <Feather name="edit-3" size={14} color={colors.accent} />
+                      <Text style={s.fullChartPanelActionText}>Lots</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ) : null}
+
+              {fullChartPanel === 'timeframes' ? (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.fullChartPanelRow}>
+                  {TIMEFRAMES.map((option) => {
+                    const active = option === tf;
+                    return (
+                      <Pressable
+                        key={option}
+                        onPress={() => {
+                          setTf(option);
+                          setFullChartPanel(null);
+                        }}
+                        style={({ pressed }) => [
+                          s.fullChartPanelChip,
+                          active && s.fullChartPanelChipActive,
+                          { opacity: pressed ? 0.75 : 1 },
+                        ]}
+                      >
+                        <Text style={[s.fullChartPanelChipText, active && s.fullChartPanelChipTextActive]}>{option}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              ) : null}
+
+              {fullChartPanel === 'lots' ? (
+                <View style={s.fullChartPanelColumn}>
+                  <View style={s.fullChartLotsEditor}>
+                    <Pressable onPress={() => updateFullChartLots(fullChartLots - 0.01)} style={s.fullChartLotsStep}>
+                      <Text style={s.fullChartLotsStepText}>-</Text>
+                    </Pressable>
+                    <View style={s.fullChartLotsReadout}>
+                      <Text style={s.fullChartLotsReadoutValue}>{fullChartLots.toFixed(2)}</Text>
+                      <Text style={s.fullChartLotsReadoutLabel}>LOTS</Text>
+                    </View>
+                    <Pressable onPress={() => updateFullChartLots(fullChartLots + 0.01)} style={s.fullChartLotsStep}>
+                      <Text style={s.fullChartLotsStepText}>+</Text>
+                    </Pressable>
+                  </View>
+                  <View style={s.fullChartPanelRow}>
+                    {[0.01, 0.1, 0.5, 1].map((value) => (
+                      <Pressable
+                        key={value}
+                        onPress={() => updateFullChartLots(value)}
+                        style={({ pressed }) => [
+                          s.fullChartPanelChip,
+                          fullChartLots === value && s.fullChartPanelChipActive,
+                          { opacity: pressed ? 0.75 : 1 },
+                        ]}
+                      >
+                        <Text style={[s.fullChartPanelChipText, fullChartLots === value && s.fullChartPanelChipTextActive]}>
+                          {value.toFixed(2)}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+
+              {fullChartPanel === 'indicators' ? (
+                <View style={s.fullChartPanelColumn}>
+                  {INDICATOR_SECTIONS.flatMap((section) => section.items).map((indicator) => {
+                    const active = activeIndicators.includes(indicator);
+                    return (
+                      <Pressable
+                        key={indicator}
+                        onPress={() => toggleIndicator(indicator)}
+                        style={({ pressed }) => [
+                          s.fullChartPanelOption,
+                          active && s.fullChartPanelOptionActive,
+                          { opacity: pressed ? 0.75 : 1 },
+                        ]}
+                      >
+                        <Text style={s.fullChartPanelOptionText}>{indicator === 'MA' ? 'Moving Average' : indicator}</Text>
+                        {active ? <Feather name="check" size={14} color={colors.positive} /> : null}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ) : null}
+
+              {fullChartPanel === 'settings' ? (
+                <View style={s.fullChartPanelColumn}>
+                  <Text style={s.fullChartPanelSectionLabel}>CHART TYPE</Text>
+                  <View style={s.fullChartPanelWrapRow}>
+                    {(['candles', 'bars', 'line', 'hollow'] as ChartVisualType[]).map((type) => {
+                      const active = type === chartType;
+                      return (
+                        <Pressable
+                          key={type}
+                          onPress={() => setChartType(type)}
+                          style={({ pressed }) => [
+                            s.fullChartPanelChip,
+                            active && s.fullChartPanelChipActive,
+                            { opacity: pressed ? 0.75 : 1 },
+                          ]}
+                        >
+                          <Text style={[s.fullChartPanelChipText, active && s.fullChartPanelChipTextActive]}>{type.toUpperCase()}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <Text style={s.fullChartPanelSectionLabel}>PRICE SOURCE</Text>
+                  <View style={s.fullChartPanelWrapRow}>
+                    {(['mid', 'bid', 'ask'] as ChartPriceSource[]).map((source) => {
+                      const active = source === priceSource;
+                      return (
+                        <Pressable
+                          key={source}
+                          onPress={() => setPriceSource(source)}
+                          style={({ pressed }) => [
+                            s.fullChartPanelChip,
+                            active && s.fullChartPanelChipActive,
+                            { opacity: pressed ? 0.75 : 1 },
+                          ]}
+                        >
+                          <Text style={[s.fullChartPanelChipText, active && s.fullChartPanelChipTextActive]}>{source.toUpperCase()}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <Pressable
+                    onPress={() => setShowVolumePane(!showVolumePane)}
+                    style={({ pressed }) => [s.fullChartPanelOption, showVolumePane && s.fullChartPanelOptionActive, { opacity: pressed ? 0.75 : 1 }]}
+                  >
+                    <Text style={s.fullChartPanelOptionText}>VOLUME</Text>
+                    {showVolumePane ? <Feather name="check" size={14} color={colors.positive} /> : null}
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
+          </>
+        ) : null}
+        <View style={[s.fullChartTradeDock, { bottom: fullChartBottomOffset }]}>
+          <View style={s.fullChartTradeRow}>
+            <Pressable
+              onPress={() => submitFullChartTrade('sell')}
+              disabled={fullChartSellPrice == null}
+              style={({ pressed }) => [
+                s.fullChartSideBtn,
+                s.fullChartSellBtn,
+                { opacity: fullChartSellPrice == null ? 0.45 : pressed ? 0.85 : 1 },
+              ]}
+            >
+              <Text style={s.fullChartSideLabel}>Sell</Text>
+              <Text style={s.fullChartSidePrice} numberOfLines={1}>{fullChartSellPrice == null ? '--' : fmtPrice(fullChartSellPrice, symbol.decimals)}</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setFullChartPanel((panel) => (panel === 'lots' ? null : 'lots'))}
+              style={({ pressed }) => [s.fullChartLotsPill, { opacity: pressed ? 0.72 : 1 }]}
+            >
+              <Text style={s.fullChartLotsValue}>{fullChartLots.toFixed(2)}</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => submitFullChartTrade('buy')}
+              disabled={fullChartBuyPrice == null}
+              style={({ pressed }) => [
+                s.fullChartSideBtn,
+                s.fullChartBuyBtn,
+                { opacity: fullChartBuyPrice == null ? 0.45 : pressed ? 0.85 : 1 },
+              ]}
+            >
+              <Text style={s.fullChartBuyLabel}>Buy</Text>
+              <Text style={s.fullChartBuyPrice} numberOfLines={1}>{fullChartBuyPrice == null ? '--' : fmtPrice(fullChartBuyPrice, symbol.decimals)}</Text>
+            </Pressable>
+          </View>
+          <View style={s.fullChartSentimentRow}>
+            <Pressable
+              onPress={() => setFullChartPanel((panel) => (panel === 'account' ? null : 'account'))}
+              style={({ pressed }) => [s.fullChartSentimentBlock, { opacity: pressed ? 0.72 : 1 }]}
+            >
+              <View style={s.fullChartSentimentTrack}>
+                <View style={[s.fullChartSentimentFill, s.fullChartSellFill, { width: '60%' }]} />
+              </View>
+              <Text style={[s.fullChartSentimentText, { color: colors.danger }]}>60%</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setFullChartPanel((panel) => (panel === 'account' ? null : 'account'))}
+              style={({ pressed }) => [s.fullChartSentimentBlock, { opacity: pressed ? 0.72 : 1 }]}
+            >
+              <View style={s.fullChartSentimentTrack}>
+                <View style={[s.fullChartSentimentFill, s.fullChartBuyFill, { width: '40%' }]} />
+              </View>
+              <Text style={[s.fullChartSentimentText, { color: colors.accent }]}>40%</Text>
+            </Pressable>
+          </View>
+        </View>
+        {tradeNoticeOverlay}
       </SafeAreaView>
     );
   }
@@ -463,77 +934,95 @@ export const StandaloneTerminal = () => {
           <OhlcCell label="SPR" value={fmtSpread(symbol)} />
         </Animated.View>
 
-        <Animated.View style={[a2, s.tfRow]}>
-          <ScrollView
-            horizontal
-            bounces={false}
-            showsHorizontalScrollIndicator={false}
-            style={s.tfScroll}
-            contentContainerStyle={s.tfScrollContent}
+        <Animated.View style={[a2, s.chartSection]}>
+          <View style={s.tfRow}>
+            <ScrollView
+              horizontal
+              bounces={false}
+              showsHorizontalScrollIndicator={false}
+              style={s.tfScroll}
+              contentContainerStyle={s.tfScrollContent}
+            >
+              {TIMEFRAMES.map((option) => {
+                const active = option === tf;
+                return (
+                  <Pressable
+                    key={option}
+                    onPress={() => setTf(option)}
+                    style={({ pressed }) => [
+                      s.tfBtn,
+                      { backgroundColor: active ? colors.ink : 'transparent', opacity: pressed ? 0.7 : 1 },
+                    ]}
+                  >
+                    <Text style={[s.tfText, { color: active ? colors.bg : colors.inkSecondary }]}>{option}</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <View style={s.chartToolCluster}>
+              <Pressable onPress={() => setFeaturePanel('indicators')} hitSlop={6} style={({ pressed }) => [s.tfTool, { opacity: pressed ? 0.6 : 1 }]}>
+                <Text style={s.tfToolText}>fx</Text>
+              </Pressable>
+              <Pressable onPress={() => setFeaturePanel('objects')} hitSlop={6} style={({ pressed }) => [s.tfTool, { opacity: pressed ? 0.6 : 1 }]}>
+                <Feather name="layers" size={14} color={colors.inkSecondary} />
+              </Pressable>
+              <Pressable onPress={() => setFeaturePanel('alerts')} hitSlop={6} style={({ pressed }) => [s.tfTool, { opacity: pressed ? 0.6 : 1 }]}>
+                <Feather name="bell" size={14} color={colors.inkSecondary} />
+              </Pressable>
+              <Pressable onPress={() => setFeaturePanel('settings')} hitSlop={6} style={({ pressed }) => [s.tfTool, { opacity: pressed ? 0.6 : 1 }]}>
+                <Feather name="sliders" size={14} color={colors.inkSecondary} />
+              </Pressable>
+              <Pressable onPress={() => setFeaturePanel('more')} hitSlop={6} style={({ pressed }) => [s.tfTool, { opacity: pressed ? 0.6 : 1 }]}>
+                <Feather name="more-vertical" size={14} color={colors.inkSecondary} />
+              </Pressable>
+              <Pressable onPress={openFullChart} hitSlop={6} style={({ pressed }) => [s.tfTool, { opacity: pressed ? 0.6 : 1 }]}>
+                <Feather name="maximize" size={14} color={colors.inkSecondary} />
+              </Pressable>
+            </View>
+          </View>
+
+          <View
+            style={s.chartWrap}
+            onLayout={(event) => {
+              const nextWidth = Math.floor(event.nativeEvent.layout.width);
+              const nextHeight = Math.floor(event.nativeEvent.layout.height);
+              if (nextWidth !== chartWidth) setChartWidth(nextWidth);
+              if (nextHeight !== chartHeight) setChartHeight(nextHeight);
+            }}
           >
-            {TIMEFRAMES.map((option) => {
-              const active = option === tf;
-              return (
-                <Pressable
-                  key={option}
-                  onPress={() => setTf(option)}
-                  style={({ pressed }) => [
-                    s.tfBtn,
-                    { backgroundColor: active ? colors.ink : 'transparent', opacity: pressed ? 0.7 : 1 },
-                  ]}
-                >
-                  <Text style={[s.tfText, { color: active ? colors.bg : colors.inkSecondary }]}>{option}</Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
-          <View style={s.chartToolCluster}>
-            <Pressable onPress={() => setFeaturePanel('indicators')} hitSlop={6} style={({ pressed }) => [s.tfTool, { opacity: pressed ? 0.6 : 1 }]}>
-              <Text style={s.tfToolText}>fx</Text>
-            </Pressable>
-            <Pressable onPress={() => setFeaturePanel('objects')} hitSlop={6} style={({ pressed }) => [s.tfTool, { opacity: pressed ? 0.6 : 1 }]}>
-              <Feather name="layers" size={14} color={colors.inkSecondary} />
-            </Pressable>
-            <Pressable onPress={() => setFeaturePanel('alerts')} hitSlop={6} style={({ pressed }) => [s.tfTool, { opacity: pressed ? 0.6 : 1 }]}>
-              <Feather name="bell" size={14} color={colors.inkSecondary} />
-            </Pressable>
-            <Pressable onPress={() => setFeaturePanel('settings')} hitSlop={6} style={({ pressed }) => [s.tfTool, { opacity: pressed ? 0.6 : 1 }]}>
-              <Feather name="sliders" size={14} color={colors.inkSecondary} />
-            </Pressable>
-            <Pressable onPress={() => setFeaturePanel('more')} hitSlop={6} style={({ pressed }) => [s.tfTool, { opacity: pressed ? 0.6 : 1 }]}>
-              <Feather name="more-vertical" size={14} color={colors.inkSecondary} />
-            </Pressable>
-            <Pressable onPress={openFullChart} hitSlop={6} style={({ pressed }) => [s.tfTool, { opacity: pressed ? 0.6 : 1 }]}>
-              <Feather name="maximize" size={14} color={colors.inkSecondary} />
-            </Pressable>
+            {chartWidth > 0 && chartHeight > 0 ? (
+              <CandlestickChart
+                data={candles}
+                width={chartWidth}
+                height={chartHeight}
+                decimals={symbol.decimals}
+                visualType={chartType}
+                priceSource={priceSource}
+                spread={symbol.spread}
+                showVolume={showVolumePane}
+                activeIndicators={activeIndicators}
+                objects={chartObjects}
+                onObjectsChange={setChartObjects}
+                alerts={priceAlerts}
+              />
+            ) : null}
+          </View>
+          <View style={s.chartAxisFrame}>
+            {chartTimeLabels.map((label, index) => (
+              <Text
+                key={`${label}-${index}`}
+                style={[
+                  s.chartAxisText,
+                  index === 1 && s.chartAxisTextCenter,
+                  index === 2 && s.chartAxisTextEnd,
+                ]}
+                numberOfLines={1}
+              >
+                {label}
+              </Text>
+            ))}
           </View>
         </Animated.View>
-
-        <View
-          style={s.chartWrap}
-          onLayout={(event) => {
-            const nextWidth = Math.floor(event.nativeEvent.layout.width);
-            const nextHeight = Math.floor(event.nativeEvent.layout.height);
-            if (nextWidth !== chartWidth) setChartWidth(nextWidth);
-            if (nextHeight !== chartHeight) setChartHeight(nextHeight);
-          }}
-        >
-          {chartWidth > 0 && chartHeight > 0 ? (
-            <CandlestickChart
-              data={candles}
-              width={chartWidth}
-              height={chartHeight}
-              decimals={symbol.decimals}
-              visualType={chartType}
-              priceSource={priceSource}
-              spread={symbol.spread}
-              showVolume={showVolumePane}
-              activeIndicators={activeIndicators}
-              objects={chartObjects}
-              alerts={priceAlerts}
-            />
-          ) : null}
-        </View>
       </View>
 
       {showSymbolPicker ? (
@@ -600,35 +1089,7 @@ export const StandaloneTerminal = () => {
         />
       )}
 
-      {tradeNotice ? (
-        <View pointerEvents="none" style={s.tradeNoticeWrap}>
-          <Animated.View
-            style={[
-              s.tradeNotice,
-              {
-                opacity: tradeNoticeAnim,
-                transform: [
-                  {
-                    translateX: tradeNoticeAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [tradeNotice.side === 'buy' ? 112 : tradeNotice.side === 'sell' ? -112 : 0, 0],
-                    }),
-                  },
-                  {
-                    translateY: tradeNoticeAnim.interpolate({ inputRange: [0, 1], outputRange: [104, 0] }),
-                  },
-                  {
-                    scale: tradeNoticeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.82, 1] }),
-                  },
-                ],
-              },
-            ]}
-          >
-            <View style={s.tradeNoticeDot} />
-            <Text style={s.tradeNoticeText}>{tradeNotice.message}</Text>
-          </Animated.View>
-        </View>
-      ) : null}
+      {tradeNoticeOverlay}
     </SafeAreaView>
   );
 };
@@ -1259,6 +1720,7 @@ const s = StyleSheet.create({
   body: {
     flex: 1,
     paddingHorizontal: 16,
+    paddingBottom: PANEL_HANDLE_HEIGHT + 12,
   },
   symStrip: {
     flexDirection: 'row',
@@ -1367,6 +1829,7 @@ const s = StyleSheet.create({
   tfRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: 6,
     paddingVertical: 8,
     gap: 6,
     minHeight: 44,
@@ -1402,10 +1865,38 @@ const s = StyleSheet.create({
     fontSize: 13,
     fontFamily: fonts.bodySemi,
   },
+  chartSection: {
+    height: 524,
+    minHeight: 440,
+    marginTop: 6,
+    backgroundColor: 'rgba(3,5,9,0.42)',
+    overflow: 'hidden',
+  },
   chartWrap: {
     flex: 1,
-    minHeight: 180,
     overflow: 'hidden',
+  },
+  chartAxisFrame: {
+    height: 26,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.lineSoft,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+  },
+  chartAxisText: {
+    flex: 1,
+    color: colors.inkMuted,
+    fontSize: 9,
+    fontFamily: fonts.mono,
+  },
+  chartAxisTextCenter: {
+    textAlign: 'center',
+  },
+  chartAxisTextEnd: {
+    textAlign: 'right',
+    color: colors.inkSecondary,
+    fontFamily: fonts.bodySemi,
   },
   chartToolCluster: {
     flexDirection: 'row',
@@ -1414,25 +1905,378 @@ const s = StyleSheet.create({
     width: 132,
     flexShrink: 0,
   },
-  fullChartOnlyWrap: {
-    flex: 1,
+  fullChartSection: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
     backgroundColor: colors.bg,
     overflow: 'hidden',
   },
-  fullChartClose: {
+  fullChartOnlyWrap: {
+    flex: 1,
+    overflow: 'hidden',
+  },
+  fullChartTopBar: {
     position: 'absolute',
     top: 12,
-    left: 12,
-    width: 36,
+    left: 62,
+    right: 10,
+    minHeight: 36,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    zIndex: 42,
+    elevation: 14,
+  },
+  fullChartSymbolBtn: {
+    height: 36,
+    width: 58,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.line,
+    backgroundColor: 'rgba(12, 16, 23, 0.88)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingHorizontal: 6,
+  },
+  fullChartSymbolIcon: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F59E0B',
+  },
+  fullChartAccountPill: {
+    flex: 1,
+    minWidth: 0,
     height: 36,
     borderRadius: 18,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.line,
-    backgroundColor: 'rgba(10,12,18,0.82)',
+    backgroundColor: 'rgba(12, 16, 23, 0.9)',
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 40,
-    elevation: 12,
+    gap: 7,
+    paddingHorizontal: 8,
+  },
+  fullChartDemoBadge: {
+    minWidth: 48,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(34, 197, 94, 0.18)',
+    color: colors.positive,
+    fontSize: 10,
+    fontFamily: fonts.bodySemi,
+    textAlign: 'center',
+  },
+  fullChartBalanceText: {
+    flexShrink: 1,
+    color: colors.ink,
+    fontSize: 13,
+    fontFamily: fonts.bodySemi,
+  },
+  fullChartExpandBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.line,
+    backgroundColor: 'rgba(12, 16, 23, 0.9)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fullChartToolRow: {
+    position: 'absolute',
+    left: 16,
+    bottom: 110,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    zIndex: 42,
+    elevation: 14,
+  },
+  fullChartToolBtn: {
+    minWidth: 33,
+    height: 32,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.line,
+    backgroundColor: 'rgba(18, 25, 34, 0.9)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 7,
+  },
+  fullChartToolText: {
+    color: colors.ink,
+    fontSize: 13,
+    fontFamily: fonts.bodySemi,
+  },
+  fullChartPanelBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 41,
+  },
+  fullChartFloatingPanel: {
+    position: 'absolute',
+    maxHeight: 360,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.line,
+    backgroundColor: 'rgba(10, 13, 19, 0.96)',
+    padding: 8,
+    zIndex: 44,
+    elevation: 16,
+  },
+  fullChartPanelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  fullChartPanelWrapRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 7,
+  },
+  fullChartPanelColumn: {
+    gap: 7,
+  },
+  fullChartPanelSectionLabel: {
+    color: colors.inkMuted,
+    fontSize: 9,
+    fontFamily: fonts.bodySemi,
+    marginTop: 4,
+  },
+  fullChartPanelChip: {
+    minWidth: 54,
+    minHeight: 34,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.lineSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  fullChartPanelChipActive: {
+    backgroundColor: colors.ink,
+    borderColor: colors.ink,
+  },
+  fullChartPanelChipText: {
+    color: colors.inkSecondary,
+    fontSize: 11,
+    fontFamily: fonts.bodySemi,
+  },
+  fullChartPanelChipTextActive: {
+    color: colors.bg,
+  },
+  fullChartPanelOption: {
+    minHeight: 38,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.lineSoft,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  fullChartPanelOptionActive: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  fullChartPanelOptionText: {
+    color: colors.ink,
+    fontSize: 12,
+    fontFamily: fonts.bodySemi,
+  },
+  fullChartPanelMetricRow: {
+    minHeight: 30,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.lineSoft,
+  },
+  fullChartPanelMetricLabel: {
+    color: colors.inkMuted,
+    fontSize: 11,
+    fontFamily: fonts.body,
+  },
+  fullChartPanelMetricValue: {
+    flexShrink: 1,
+    color: colors.ink,
+    fontSize: 12,
+    fontFamily: fonts.mono,
+    textAlign: 'right',
+  },
+  fullChartPanelActionBtn: {
+    flex: 1,
+    minHeight: 34,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.lineSoft,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  fullChartPanelActionText: {
+    color: colors.ink,
+    fontSize: 11,
+    fontFamily: fonts.bodySemi,
+  },
+  fullChartLotsEditor: {
+    minHeight: 48,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.lineSoft,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    overflow: 'hidden',
+  },
+  fullChartLotsStep: {
+    width: 54,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  fullChartLotsStepText: {
+    color: colors.ink,
+    fontSize: 18,
+    fontFamily: fonts.bodySemi,
+  },
+  fullChartLotsReadout: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fullChartLotsReadoutValue: {
+    color: colors.ink,
+    fontSize: 16,
+    fontFamily: fonts.mono,
+  },
+  fullChartLotsReadoutLabel: {
+    color: colors.inkMuted,
+    fontSize: 8,
+    fontFamily: fonts.bodySemi,
+  },
+  fullChartTradeDock: {
+    position: 'absolute',
+    left: 14,
+    right: 14,
+    bottom: 14,
+    minHeight: 86,
+    gap: 6,
+    paddingHorizontal: 2,
+    paddingVertical: 0,
+    zIndex: 42,
+    elevation: 14,
+  },
+  fullChartTradeRow: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  fullChartSideBtn: {
+    flex: 1,
+    minWidth: 0,
+    height: 48,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.2,
+  },
+  fullChartSellBtn: {
+    backgroundColor: colors.danger,
+    borderColor: colors.danger,
+  },
+  fullChartBuyBtn: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
+  },
+  fullChartSideLabel: {
+    color: colors.bg,
+    fontSize: 11,
+    fontFamily: fonts.bodySemi,
+  },
+  fullChartBuyLabel: {
+    color: colors.bg,
+    fontSize: 11,
+    fontFamily: fonts.bodySemi,
+  },
+  fullChartSidePrice: {
+    color: colors.bg,
+    fontSize: 14,
+    fontFamily: fonts.mono,
+    marginTop: 2,
+    fontWeight: '700',
+  },
+  fullChartBuyPrice: {
+    color: colors.bg,
+    fontSize: 14,
+    fontFamily: fonts.mono,
+    marginTop: 2,
+    fontWeight: '700',
+  },
+  fullChartLotsPill: {
+    position: 'absolute',
+    left: '50%',
+    bottom: -2,
+    width: 54,
+    height: 24,
+    marginLeft: -27,
+    borderRadius: 5,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.line,
+    backgroundColor: 'rgba(10, 12, 18, 0.95)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 43,
+  },
+  fullChartLotsValue: {
+    color: colors.ink,
+    fontSize: 11,
+    fontFamily: fonts.mono,
+  },
+  fullChartSentimentRow: {
+    height: 24,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  fullChartSentimentBlock: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 2,
+  },
+  fullChartSentimentTrack: {
+    width: '100%',
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.ink,
+    overflow: 'hidden',
+  },
+  fullChartSentimentFill: {
+    height: '100%',
+    borderRadius: 2,
+  },
+  fullChartSellFill: {
+    backgroundColor: colors.danger,
+  },
+  fullChartBuyFill: {
+    backgroundColor: colors.accent,
+  },
+  fullChartSentimentText: {
+    fontSize: 10,
+    fontFamily: fonts.mono,
   },
   dropdownBackdrop: {
     ...StyleSheet.absoluteFillObject,
